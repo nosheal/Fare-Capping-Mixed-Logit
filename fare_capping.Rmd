@@ -1,0 +1,193 @@
+---
+title: "Fare-Capping Mixed Logit Model"
+author: "Nikhil Kalathil"
+date: "4/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+library(tidyverse)
+library(ggthemes)
+library(mlogit)
+library(RColorBrewer)
+```
+
+
+```{r, include = FALSE}
+household <- read_csv("https://raw.githubusercontent.com/nosheal/Fare-Capping-Mixed-Logit/master/brisbane_household.csv")
+```
+
+```{r, include = FALSE}
+person <- read_csv("https://raw.githubusercontent.com/nosheal/Fare-Capping-Mixed-Logit/master/brisbane_person.csv")
+```
+
+```{r, include = FALSE}
+trips <- read_csv("https://raw.githubusercontent.com/nosheal/Fare-Capping-Mixed-Logit/master/brisbane_trips_clean.csv")
+```
+
+We start we data in three dimensions: household, person, and trip. We begin our analysis by considering the mode choice decision of people who take more than 2 public transit trips on their third trip. 
+
+First, we create a broad mode decision variable. Note that the `group ride` choice refers to taxis and school busses in Brisbane. School buses work uniquely in Brisbane. (INSERT DESCRIPTION HERE) 
+
+```{r}
+trips <- trips %>% 
+  mutate(transit = case_when(
+    mode %in% c(7,8,10) ~ "public", 
+    mode %in% c(4,5) ~ "physical",
+    mode %in% c(6, 9) ~ "group ride", 
+    mode %in% c(1, 2, 3) ~ "private", 
+    mode %in% c(11) ~ "plane",
+  ))
+```
+
+Let us take a preview of how many observations we have here. 
+
+
+```{r}
+trips %>% 
+  filter(!is.na(transit)) %>% 
+  group_by(transit) %>% 
+  summarise(weights = sum(WDTRIPWGT11, na.rm = TRUE), count = n()) %>% 
+  arrange(-weights)
+```
+
+The vast majority of our observations are in the physical and private transportation categories. It is interesting to note the prevalance of the physical transportation category.
+
+We are now interested in looking at the sub-population that takes more than two trips. Our data is organized so that each row is a unique leg of a trip. Each trip is tied to a person's travel diary entry. We must first identify how many people took two or more trips. By definition, anyone who had a trip with more than  stages takes more than 2 trips. 
+
+Thus, we must identify the individuals who took multiple one stage trips.  
+
+```{r}
+trips %>% 
+  filter(TRIPSTAGES <= 2, !is.na(transit)) %>% 
+  group_by(PERSID, transit) %>% 
+  summarise(weight = sum(WDTRIPWGT11, na.rm = TRUE), n = n()) %>% 
+  ggplot() + 
+  geom_density(aes(n, fill = transit, weight = weight), position = "identity") + 
+  facet_wrap(~transit) +
+  scale_fill_brewer(palette = "Set2") + 
+  labs(title = "Distribution of Number of Trips by Broad Mode Choice", fill = "Broad Mode Choice", x = "Trips") + 
+  theme_bw()
+```
+
+Now, how many of these people took more than 2 one stage trips? 
+
+```{r}
+trips %>% 
+  filter(TRIPSTAGES <= 2, !is.na(transit)) %>% 
+  group_by(PERSID, transit) %>% 
+  summarise(weight = sum(WDTRIPWGT11, na.rm = TRUE), n = n()) %>% 
+  filter(n > 2) %>% 
+  ggplot() + 
+  geom_density(aes(n, fill = transit, weight = weight), position = "identity") + 
+  facet_wrap(~transit) +
+  scale_fill_brewer(palette = "Set2") + 
+  labs(title = "Distribution of Number of Trips by Broad Mode Choice", fill = "Broad Mode Choice", x = "Trips") + 
+  theme_bw()
+```
+
+We will want to save all of these data observations. It is interesting to note that there are no people who took more than 2 one stage public transportation trips. 
+
+```{r}
+trips_2 <- trips %>% 
+  filter(!is.na(transit)) %>% 
+  group_by(PERSID) %>% 
+  count() %>% 
+  rename(total_trips = n) %>% 
+  left_join(trips) %>% 
+  mutate(trip_seq = row_number())
+```
+
+We now have a variable telling us how many trips people in our data took. We also have a variable indexing a trip. The specific population we will begin our analysis on is individuals who took more than two total trips. Our first model will atempt to estimate the factors that influence their mode choice for the their third trip. 
+
+```{r}
+trips_freq <- trips_2 %>% 
+  filter(total_trips > 2 | TRIPSTAGES > 2)
+```
+
+Among these people, let us examine how many observations in each broad mode choice category we have. 
+
+```{r}
+trips_freq %>% 
+  filter(!is.na(transit)) %>% 
+  group_by(transit) %>% 
+  summarise(weights = sum(WDTRIPWGT11, na.rm = TRUE), count = n()) %>% 
+  arrange(-weights)
+```
+
+It is interesting to note that most people in our dataset took more than 2 trips. How can we identify the mode choice of the third or later trips? 
+
+```{r}
+trips_freq %>% 
+  filter(leg > 2 | (total_trips > 2 & leg == 1)) %>% 
+  filter(!is.na(transit)) %>% 
+  group_by(transit) %>%
+  summarise(weights = sum(WDTRIPWGT11, na.rm = TRUE), count = n()) %>% 
+  arrange(-weights)
+```
+
+We can now ask a question: does we see an observable difference in mode choice between the whole population and this population? 
+
+```{r}
+brisbane_total_trips = as.numeric(trips_freq %>% 
+  ungroup() %>% 
+  filter(!is.na(transit)) %>% 
+  summarise(count = n()))
+```
+
+
+```{r}
+trips_one <- trips_2 %>% 
+  filter(!is.na(transit), total_trips <= 2) %>% 
+  group_by(transit) %>% 
+  summarise(weights = sum(WDTRIPWGT11, na.rm = TRUE), count = n()) %>% 
+  mutate(percent_trips = count/brisbane_total_trips, level = "One or Two Trips")
+```
+
+We see that we have no observations where an individual took public transportation as one of their 
+
+```{r}
+trips_freq %>% 
+  filter(leg > 2 | (total_trips > 2 & leg == 1)) %>% 
+  filter(!is.na(transit)) %>% 
+  group_by(transit) %>%
+  summarise(weights = sum(WDTRIPWGT11, na.rm = TRUE), count = n()) %>% 
+  mutate(third_percent_trips = count/brisbane_total_trips, level = "Third or Later") %>% 
+  select(transit, third_percent_trips) %>% 
+  left_join(trips_one, . ) %>% 
+  select(transit, percent_trips_12 = percent_trips, percent_trips_3plus = third_percent_trips) %>% 
+  mutate(percent_trips_12 = round(100*percent_trips_12,2), percent_trips_3plus = round(100*percent_trips_3plus,2))
+```
+
+We can see that there seems to be an apparent difference in mode decisions between the first two legs of a trip that a person takes and the third or later leg of that trip. 
+
+As a reminder, our goal is to estimate if the introduction of fare capping increases the probability that an individual either 1) takes a third ride that they otherwise wouldn't; or, 2) chooses public transportation as their third ride. 
+
+We now turn to multinomial logit models to estimate the mode choice decision. We estimate models in the following order: 
+
+1. The only thing that matters is what leg of the trip you are on and the number of total trips that you make. 
+2. Introduce duration and trip purpose
+3. Introduce person level variables such as age, gender, avialability, work status, student status
+4. Introduce household level variables such as fare, year, weekend, car ownership, bike ownership, and HHIC 
+
+Whenever possible, in each stage, we estimate a basic multinomial logit model as well as a mixed logit model. 
+
+## First Model
+
+The only thing that matters is what leg of the trip you are on and the number of total trips that you make. 
+
+## Second Model
+
+Introduce duration and trip purpose
+
+## Third Model 
+
+Introduce person level variables such as age, gender, avialability, work status, student status
+
+## Fourth Model
+
+Introduce household level variables such as fare, year, weekend, car ownership, bike ownership, and HHIC 
